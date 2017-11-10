@@ -1,10 +1,16 @@
+########################################################################
+# This package is based on the neo4j-contrib/boltkit package on GitHub #
+# It is also greatly influence by the JuliaIO/MsgPack.jl Julia package #
+########################################################################
+
 __precompile__()
 module PackageStream
 
+# Imports/Exports
 import Base.showerror
-
 export pack, unpack
 
+# Dictionary to handle markers and dispatch associated with packed items
 const markers = Dict{Symbol, Tuple{Vector{UInt8}, Function}}(
     :Nothing    => (b"\xC0", s -> nothing),
     :False      => (b"\xC2", s -> false),
@@ -27,11 +33,13 @@ const markers = Dict{Symbol, Tuple{Vector{UInt8}, Function}}(
     :Struct16   => (b"\xDD", s -> unpackstruct(s, readn(s, UInt16))),
 )
 
+# Error specific to the package
 struct ValueError <: Exception
     content::AbstractString
 end
 Base.showerror(io::IO, e::ValueError) = print(io, e.content)
 
+# Function to write an item that is big enough to need a head marker
 function writehead(
     stream::IOBuffer,
     head::Tuple{Vector{UInt8}, Function},
@@ -39,7 +47,6 @@ function writehead(
     )
     writehead(stream, head[1], value)
 end
-
 function writehead(
     stream::IOBuffer,
     head::Vector{UInt8},
@@ -47,13 +54,6 @@ function writehead(
     )
     write(stream, head)
     write(stream, hton(value))
-end
-
-# Function pack with dispatch over Vector of values
-function pack(value)
-    stream = IOBuffer()
-    pack(stream, value)
-    return take!(stream)
 end
 
 # Function pack with dispatch over Void value
@@ -92,6 +92,7 @@ function pack(
     end
 end
 
+# Function pack with dispatch over Float value
 function pack(
     stream::IOBuffer,
     value::Float64
@@ -99,6 +100,7 @@ function pack(
     writehead(stream, markers[:Float], value)
 end
 
+# Function pack with dispatch over String value
 function pack(
     stream::IOBuffer,
     value::AbstractString
@@ -119,6 +121,7 @@ function pack(
     write(stream, utf_8)
 end
 
+# Function pack with dispatch over list (Vector) value
 function pack(
     stream::IOBuffer,
     value::Vector
@@ -138,6 +141,7 @@ function pack(
     foreach(x -> write(stream, pack(x)), value)
 end
 
+# Function pack with dispatch over map (Dict) value
 function pack(
     stream::IOBuffer,
     value::Dict
@@ -157,6 +161,7 @@ function pack(
     foreach(x -> (write(stream, pack(x[1])); write(stream, pack(x[2]))), value)
 end
 
+# Function pack with dispatch over struct (Tuple) value
 function pack(
     stream::IOBuffer,
     value::Tuple
@@ -176,14 +181,37 @@ function pack(
     foreach(x -> write(stream, pack(x)), fields)
 end
 
+"""
+    pack(value)
+
+Return a Byte Array (`Vector{UInt8}`) encoded through the PackageStream
+specification.
+
+The value type must be either of the following:
+* The Nil value `nothing`
+* A boolean value `true` or `false`
+* An integer up to 64 bits `Int64`
+* A float up to 64 bits `Float64`
+* A string (up to 2^32 characters) `<:AbstractString`
+* A list (up to 2^32 elements) `Vector`
+* A map of keys and values (up to 2^32 elements) `Dict`
+* A structure (signature, field 1, ..., field n) (up to 2^32 fields) `Tuple`
+"""
+function pack(value)
+    stream = IOBuffer()
+    pack(stream, value)
+    return take!(stream)
+end
+
+# Read functions from big-endian to little-endian
 readn(s, t) = ntoh(read(s, t))
 readi(s, t) = Int64(readn(s, t))
-unpackstring(s, n) = String(read(s, n))
 
+# Sub-routine to unpack specific items: strings, lists, maps, structs
+unpackstring(s, n) = String(read(s, n))
 function unpacklist(s, n)
     return [unpack(s) for i in 1:n]
 end
-
 function unpackmap(s, n)
     out = Dict()
     for i in 1:n
@@ -193,16 +221,11 @@ function unpackmap(s, n)
     end
     return out
 end
-
 function unpackstruct(s, n)
     return Tuple([unpack(s) for i in 1:n+1])
 end
 
-
-function unpack(stream::Vector{UInt8})
-    return unpack(IOBuffer(stream))
-end
-
+# Unpack core dispatch (stream argument)
 function unpack(stream::IOBuffer)
     headbyte = read(stream, UInt8)
     for (mark, dispatch) in values(markers)
@@ -223,6 +246,26 @@ function unpack(stream::IOBuffer)
     else
         throw(ValueError("Unknow marker byte $headbyte"))
     end
+end
+
+"""
+    unpack(byte_array)
+
+Argument is a Byte Array (`Vector{UInt8}`) following the encoding the
+PackageStream specification for Neo4j.
+
+The return value type can be either of the following:
+* The Nil value `nothing`
+* A boolean value `true` or `false`
+* An integer up to 64 bits `Int64`
+* A float up to 64 bits `Float64`
+* A string (up to 2^32 characters) `<:AbstractString`
+* A list (up to 2^32 elements) `Vector`
+* A map of keys and values (up to 2^32 elements) `Dict`
+* A structure (signature, field 1, ..., field n) (up to 2^32 fields) `Tuple`
+"""
+function unpack(stream::Vector{UInt8})
+    return unpack(IOBuffer(stream))
 end
 
 end # module
