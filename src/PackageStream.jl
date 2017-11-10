@@ -10,6 +10,15 @@ module PackageStream
 import Base.showerror
 export pack, unpack
 
+# Type of packable values
+Atomic = Union{Void, Bool, Integer, AbstractFloat, AbstractString}
+"""
+    Packable type of data values
+    1) Atomic values: `Union{Void, Bool, Integer, AbstractFloat, AbstractString}`
+    2) Packable values: `Union{Atomic, Vector, Dict, Tuple}`
+"""
+Packable = Union{Atomic, Vector, Dict, Tuple}
+
 # Dictionary to handle markers and dispatch associated with packed items
 const markers = Dict{Symbol, Tuple{Vector{UInt8}, Function}}(
     :Nothing    => (b"\xC0", s -> nothing),
@@ -43,14 +52,14 @@ Base.showerror(io::IO, e::ValueError) = print(io, e.content)
 function writehead(
     stream::IOBuffer,
     head::Tuple{Vector{UInt8}, Function},
-    value # TODO list the types
+    value::Packable
     )
     writehead(stream, head[1], value)
 end
 function writehead(
     stream::IOBuffer,
     head::Vector{UInt8},
-    value # TODO list the types
+    value::Packable
     )
     write(stream, head)
     write(stream, hton(value))
@@ -95,7 +104,7 @@ end
 # Function pack with dispatch over Float value
 function pack(
     stream::IOBuffer,
-    value::Float64
+    value::AbstractFloat
     )
     writehead(stream, markers[:Float], value)
 end
@@ -182,7 +191,7 @@ function pack(
 end
 
 """
-    pack(value)
+    pack(value::Packable)
 
 Return a Byte Array (`Vector{UInt8}`) encoded through the PackageStream
 specification.
@@ -197,36 +206,64 @@ The value type must be either of the following:
 * A map of keys and values (up to 2^32 elements) `Dict`
 * A structure (signature, field 1, ..., field n) (up to 2^32 fields) `Tuple`
 """
-function pack(value)
+function pack(
+    value::Packable
+    )
     stream = IOBuffer()
     pack(stream, value)
     return take!(stream)
 end
 
 # Read functions from big-endian to little-endian
-readn(s, t) = ntoh(read(s, t))
-readi(s, t) = Int64(readn(s, t))
+function readn(
+    stream::IOBuffer,
+    t::DataType
+    )
+    return ntoh(read(stream, t))
+end
+function readi(
+    stream::IOBuffer,
+    t::DataType
+    )
+    return Int64(readn(stream, t))
+end
 
 # Sub-routine to unpack specific items: strings, lists, maps, structs
-unpackstring(s, n) = String(read(s, n))
-function unpacklist(s, n)
-    return [unpack(s) for i in 1:n]
+function unpackstring(
+    stream::IOBuffer,
+    length_values::Integer
+    )
+    return String(read(stream, length_values))
 end
-function unpackmap(s, n)
+function unpacklist(
+    stream::IOBuffer,
+    length_values::Integer
+    )
+    return [unpack(stream) for i in 1:length_values]
+end
+function unpackmap(
+    stream::IOBuffer,
+    length_values::Integer
+    )
     out = Dict()
-    for i in 1:n
-        k = unpack(s)
-        v = unpack(s)
+    for i in 1:length_values
+        k = unpack(stream)
+        v = unpack(stream)
         out[k] = v
     end
     return out
 end
-function unpackstruct(s, n)
-    return Tuple([unpack(s) for i in 1:n+1])
+function unpackstruct(
+    stream::IOBuffer,
+    length_values::Integer
+    )
+    return Tuple([unpack(stream) for i in 1:length_values+1])
 end
 
 # Unpack core dispatch (stream argument)
-function unpack(stream::IOBuffer)
+function unpack(
+    stream::IOBuffer
+    )
     headbyte = read(stream, UInt8)
     for (mark, dispatch) in values(markers)
         if mark[1] == headbyte
@@ -264,7 +301,9 @@ The return value type can be either of the following:
 * A map of keys and values (up to 2^32 elements) `Dict`
 * A structure (signature, field 1, ..., field n) (up to 2^32 fields) `Tuple`
 """
-function unpack(stream::Vector{UInt8})
+function unpack(
+    stream::Vector{UInt8}
+    )
     return unpack(IOBuffer(stream))
 end
 
